@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getStripeServer, getPriceId, PlanId, BillingInterval } from '@/lib/stripe';
+import { getStripeServer } from '@/lib/stripe';
+import { PLANS } from '@/lib/plans';
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { planId, interval = 'monthly', email, userId } = body as {
-      planId: PlanId;
-      interval?: BillingInterval;
+    const { planId, email, userId } = body as {
+      planId: 'starter' | 'pro' | 'enterprise';
       email: string;
       userId: string;
     };
@@ -18,8 +18,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Récupérer les infos du plan
+    const plan = PLANS.find(p => p.id === planId);
+    if (!plan) {
+      return NextResponse.json(
+        { error: 'Invalid plan' },
+        { status: 400 }
+      );
+    }
+
     const stripe = getStripeServer();
-    const priceId = getPriceId(planId, interval);
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
 
     // Créer ou récupérer le customer Stripe
@@ -36,14 +44,24 @@ export async function POST(request: NextRequest) {
       customerId = customer.id;
     }
 
-    // Créer la session Checkout
+    // Créer la session Checkout avec price_data inline (pas besoin de pré-créer les produits)
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       mode: 'subscription',
       payment_method_types: ['card'],
       line_items: [
         {
-          price: priceId,
+          price_data: {
+            currency: 'eur',
+            product_data: {
+              name: `TaskFlow ${plan.name}`,
+              description: `Abonnement mensuel au plan ${plan.name}`,
+            },
+            unit_amount: plan.price * 100, // Stripe utilise les centimes
+            recurring: {
+              interval: 'month',
+            },
+          },
           quantity: 1,
         },
       ],
@@ -56,7 +74,7 @@ export async function POST(request: NextRequest) {
         },
       },
       success_url: `${appUrl}/dashboard?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${appUrl}/signup?plan=${planId}&checkout=cancelled`,
+      cancel_url: `${appUrl}/dashboard/settings/billing?checkout=cancelled`,
       metadata: {
         userId,
         planId,

@@ -14,7 +14,6 @@ import { formatDate } from '@/lib/utils';
 export default function BillingPage() {
   const {
     user,
-    upgradePlan,
     reactivateSubscription,
     simulatePaymentFailure,
     recoverPayment,
@@ -22,7 +21,7 @@ export default function BillingPage() {
   } = useAuth();
   const { track } = useAnalytics();
   const [showCancelModal, setShowCancelModal] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState<string | null>(null);
 
   useEffect(() => {
     track('page_view', { page: 'billing' });
@@ -34,14 +33,40 @@ export default function BillingPage() {
   const subscription = user.subscription;
   const trialDays = getTrialDaysRemaining();
 
+  // Payer via Stripe Checkout
+  const handleStripeCheckout = async (planId: string) => {
+    setIsLoading(planId);
+    try {
+      const response = await fetch('/api/stripe/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          planId,
+          email: user.email,
+          userId: user.id,
+        }),
+      });
+
+      const { url, error } = await response.json();
+      if (error) throw new Error(error);
+
+      window.location.href = url;
+    } catch (error) {
+      console.error('Checkout error:', error);
+      alert('Impossible de créer la session de paiement. Vérifiez que les clés Stripe sont configurées.');
+    } finally {
+      setIsLoading(null);
+    }
+  };
+
   // Ouvrir le portail client Stripe
   const handleOpenStripePortal = async () => {
     if (!user.stripeCustomerId) {
-      alert('Aucun compte Stripe associé. Utilisez les contrôles de démo ou souscrivez via Stripe.');
+      alert('Aucun compte Stripe associé. Souscrivez d\'abord à un plan via Stripe.');
       return;
     }
 
-    setIsLoading(true);
+    setIsLoading('portal');
     try {
       const response = await fetch('/api/stripe/portal', {
         method: 'POST',
@@ -57,46 +82,7 @@ export default function BillingPage() {
       console.error('Portal error:', error);
       alert('Impossible d\'ouvrir le portail Stripe');
     } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Passer à un nouveau plan via Stripe Checkout
-  const handleStripeUpgrade = async (planId: string) => {
-    setIsLoading(true);
-    try {
-      const response = await fetch('/api/stripe/checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          planId,
-          interval: 'monthly',
-          email: user.email,
-          userId: user.id,
-        }),
-      });
-
-      const { url, error } = await response.json();
-      if (error) throw new Error(error);
-
-      // Redirect to Stripe Checkout
-      window.location.href = url;
-    } catch (error) {
-      console.error('Checkout error:', error);
-      alert('Impossible de créer la session de paiement');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleUpgrade = (planId: string) => {
-    const oldPlan = subscription.planId;
-    upgradePlan(planId as 'starter' | 'pro' | 'enterprise');
-
-    if (PLANS.findIndex(p => p.id === planId) > PLANS.findIndex(p => p.id === oldPlan)) {
-      track('subscription_upgraded', { from: oldPlan, to: planId });
-    } else {
-      track('subscription_downgraded', { from: oldPlan, to: planId });
+      setIsLoading(null);
     }
   };
 
@@ -187,32 +173,48 @@ export default function BillingPage() {
             )}
 
             {/* Actions */}
-            {subscription.status !== 'canceling' && subscription.status !== 'canceled' && (
-              <div className="flex gap-3 pt-2">
+            <div className="flex gap-3 pt-2">
+              {user.stripeCustomerId && (
+                <Button
+                  variant="outline"
+                  onClick={handleOpenStripePortal}
+                  disabled={isLoading === 'portal'}
+                >
+                  {isLoading === 'portal' ? 'Chargement...' : 'Gérer sur Stripe'}
+                </Button>
+              )}
+              {subscription.status !== 'canceling' && subscription.status !== 'canceled' && (
                 <Button variant="outline" onClick={() => setShowCancelModal(true)}>
                   Annuler l&apos;abonnement
                 </Button>
-              </div>
-            )}
+              )}
+            </div>
           </CardContent>
         </Card>
 
-        {/* Plans comparison */}
+        {/* Plans - Stripe Checkout direct */}
         <Card>
           <CardHeader>
-            <h2 className="text-lg font-semibold text-gray-900">Changer de plan</h2>
+            <div className="flex items-center gap-2">
+              <StripeIcon className="h-5 w-5 text-blue-600" />
+              <h2 className="text-lg font-semibold text-gray-900">Choisir un plan</h2>
+            </div>
+            <p className="text-sm text-gray-500 mt-1">
+              Cliquez sur un plan pour payer directement via Stripe (mode test)
+            </p>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {PLANS.map((plan) => {
                 const isCurrent = plan.id === subscription.planId;
+                const loading = isLoading === plan.id;
 
                 return (
                   <div
                     key={plan.id}
                     className={`rounded-lg border p-4 ${
-                      isCurrent ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
-                    }`}
+                      isCurrent ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-blue-300'
+                    } transition-colors`}
                   >
                     <div className="flex items-center justify-between mb-2">
                       <h3 className="font-semibold text-gray-900">{plan.name}</h3>
@@ -231,68 +233,41 @@ export default function BillingPage() {
                         </li>
                       ))}
                     </ul>
-                    {!isCurrent && (
-                      <Button
-                        variant={plan.id === 'pro' ? 'primary' : 'outline'}
-                        className="w-full"
-                        onClick={() => handleUpgrade(plan.id)}
-                      >
-                        {PLANS.findIndex(p => p.id === plan.id) > PLANS.findIndex(p => p.id === subscription.planId)
-                          ? 'Passer au plan'
-                          : 'Rétrograder'}
-                      </Button>
-                    )}
+                    <Button
+                      variant={plan.id === 'pro' ? 'primary' : 'outline'}
+                      className="w-full"
+                      onClick={() => handleStripeCheckout(plan.id)}
+                      disabled={loading || isCurrent}
+                    >
+                      {loading ? (
+                        'Redirection...'
+                      ) : isCurrent ? (
+                        'Plan actuel'
+                      ) : (
+                        <>
+                          <StripeIcon className="h-4 w-4 mr-2" />
+                          Payer {plan.price}€/mois
+                        </>
+                      )}
+                    </Button>
                   </div>
                 );
               })}
             </div>
-          </CardContent>
-        </Card>
-
-        {/* Stripe Integration */}
-        <Card className="border-blue-200 bg-blue-50">
-          <CardHeader className="bg-transparent">
-            <div className="flex items-center gap-2">
-              <StripeIcon className="h-6 w-6 text-blue-600" />
-              <h2 className="text-lg font-semibold text-blue-900">Paiement Stripe</h2>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-blue-700 mb-4">
-              Gérez votre abonnement, vos moyens de paiement et vos factures directement via Stripe.
+            <p className="text-xs text-gray-500 mt-4 text-center">
+              Carte de test: 4242 4242 4242 4242 • Date: future • CVC: 123
             </p>
-            <div className="flex flex-wrap gap-3">
-              <Button
-                variant="primary"
-                onClick={handleOpenStripePortal}
-                disabled={isLoading}
-              >
-                {isLoading ? 'Chargement...' : 'Ouvrir le portail Stripe'}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => handleStripeUpgrade('pro')}
-                disabled={isLoading}
-              >
-                Souscrire via Stripe Checkout
-              </Button>
-            </div>
-            {!user.stripeCustomerId && (
-              <p className="text-xs text-blue-600 mt-3">
-                Note: Un compte Stripe sera créé automatiquement lors de votre premier paiement.
-              </p>
-            )}
           </CardContent>
         </Card>
 
         {/* Demo controls */}
-        <Card className="border-dashed">
+        <Card className="border-dashed border-gray-300">
           <CardHeader className="bg-gray-50">
-            <h2 className="text-lg font-semibold text-gray-700">Contrôles de démo (sans Stripe)</h2>
+            <h2 className="text-lg font-semibold text-gray-700">Contrôles de démo (simulation locale)</h2>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-gray-500 mb-4">
-              Ces contrôles permettent de simuler différents scénarios d&apos;abonnement pour tester l&apos;application sans passer par Stripe.
+              Ces contrôles simulent des scénarios sans passer par Stripe.
             </p>
             <div className="flex flex-wrap gap-3">
               <Button variant="outline" size="sm" onClick={simulatePaymentFailure}>
