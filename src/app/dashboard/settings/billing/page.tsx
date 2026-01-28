@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/Badge';
 import { CancellationModal } from '@/components/analytics/CancellationModal';
 import { useAuth } from '@/contexts/AuthContext';
 import { useAnalytics } from '@/contexts/AnalyticsContext';
-import { PLANS, getPlan } from '@/lib/plans';
+import { PLANS, getPlan, createCheckoutSession, createPortalSession } from '@/lib/plans';
 import { formatDate } from '@/lib/utils';
 
 export default function BillingPage() {
@@ -22,6 +22,9 @@ export default function BillingPage() {
   } = useAuth();
   const { track } = useAnalytics();
   const [showCancelModal, setShowCancelModal] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
+  const [portalLoading, setPortalLoading] = useState(false);
+  const [stripeError, setStripeError] = useState<string | null>(null);
 
   useEffect(() => {
     track('page_view', { page: 'billing' });
@@ -33,14 +36,43 @@ export default function BillingPage() {
   const subscription = user.subscription;
   const trialDays = getTrialDaysRemaining();
 
-  const handleUpgrade = (planId: string) => {
-    const oldPlan = subscription.planId;
-    upgradePlan(planId as 'starter' | 'pro' | 'enterprise');
+  const handleStripeCheckout = async (planId: string) => {
+    setCheckoutLoading(planId);
+    setStripeError(null);
+    try {
+      const { url } = await createCheckoutSession(planId, user.email, user.id);
+      if (url) {
+        window.location.href = url;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Erreur inconnue';
+      setStripeError(message);
+      // Fallback: upgrade locally if Stripe is not configured
+      const oldPlan = subscription.planId;
+      upgradePlan(planId as 'starter' | 'pro' | 'enterprise');
+      if (PLANS.findIndex(p => p.id === planId) > PLANS.findIndex(p => p.id === oldPlan)) {
+        track('subscription_upgraded', { from: oldPlan, to: planId, fallback: true });
+      } else {
+        track('subscription_downgraded', { from: oldPlan, to: planId, fallback: true });
+      }
+    } finally {
+      setCheckoutLoading(null);
+    }
+  };
 
-    if (PLANS.findIndex(p => p.id === planId) > PLANS.findIndex(p => p.id === oldPlan)) {
-      track('subscription_upgraded', { from: oldPlan, to: planId });
-    } else {
-      track('subscription_downgraded', { from: oldPlan, to: planId });
+  const handlePortal = async () => {
+    setPortalLoading(true);
+    setStripeError(null);
+    try {
+      const { url } = await createPortalSession(user.email);
+      if (url) {
+        window.location.href = url;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Erreur inconnue';
+      setStripeError(message);
+    } finally {
+      setPortalLoading(false);
     }
   };
 
@@ -59,6 +91,24 @@ export default function BillingPage() {
       <Header title="Abonnement et facturation" />
 
       <div className="p-6 max-w-4xl space-y-6">
+        {/* Stripe error */}
+        {stripeError && (
+          <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <svg className="h-5 w-5 text-orange-500 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
+              </svg>
+              <div>
+                <h4 className="font-medium text-orange-900">Stripe non configuré</h4>
+                <p className="text-sm text-orange-700 mt-1">
+                  {stripeError}. Le changement de plan a été appliqué localement.
+                  Pour activer les paiements, configurez vos clés Stripe dans <code className="bg-orange-100 px-1 rounded">.env.local</code>.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Current subscription */}
         <Card>
           <CardHeader className="flex items-center justify-between">
@@ -133,6 +183,13 @@ export default function BillingPage() {
             {/* Actions */}
             {subscription.status !== 'canceling' && subscription.status !== 'canceled' && (
               <div className="flex gap-3 pt-2">
+                <Button
+                  variant="outline"
+                  onClick={handlePortal}
+                  disabled={portalLoading}
+                >
+                  {portalLoading ? 'Chargement...' : 'Gérer la facturation (Stripe)'}
+                </Button>
                 <Button variant="outline" onClick={() => setShowCancelModal(true)}>
                   Annuler l&apos;abonnement
                 </Button>
@@ -150,6 +207,7 @@ export default function BillingPage() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {PLANS.map((plan) => {
                 const isCurrent = plan.id === subscription.planId;
+                const isLoading = checkoutLoading === plan.id;
 
                 return (
                   <div
@@ -179,11 +237,22 @@ export default function BillingPage() {
                       <Button
                         variant={plan.id === 'pro' ? 'primary' : 'outline'}
                         className="w-full"
-                        onClick={() => handleUpgrade(plan.id)}
+                        onClick={() => handleStripeCheckout(plan.id)}
+                        disabled={isLoading}
                       >
-                        {PLANS.findIndex(p => p.id === plan.id) > PLANS.findIndex(p => p.id === subscription.planId)
-                          ? 'Passer au plan'
-                          : 'Rétrograder'}
+                        {isLoading ? (
+                          <span className="flex items-center justify-center gap-2">
+                            <span className="animate-spin h-4 w-4 border-2 border-current border-t-transparent rounded-full"></span>
+                            Redirection...
+                          </span>
+                        ) : (
+                          <>
+                            <CreditCardIcon className="h-4 w-4 mr-1 inline" />
+                            {PLANS.findIndex(p => p.id === plan.id) > PLANS.findIndex(p => p.id === subscription.planId)
+                              ? 'Passer au plan'
+                              : 'Rétrograder'}
+                          </>
+                        )}
                       </Button>
                     )}
                   </div>
@@ -226,6 +295,14 @@ function CheckIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+    </svg>
+  );
+}
+
+function CreditCardIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
     </svg>
   );
 }

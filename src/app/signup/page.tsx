@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { useAuth } from '@/contexts/AuthContext';
 import { useAnalytics } from '@/contexts/AnalyticsContext';
-import { PLANS } from '@/lib/plans';
+import { PLANS, createCheckoutSession } from '@/lib/plans';
 import { PlanType } from '@/types';
 
 function SignupForm() {
@@ -42,13 +42,29 @@ function SignupForm() {
     setSubmitting(true);
 
     try {
+      // 1. Create local account with trial
       const success = await signup(email, password, name, selectedPlan.id);
-      if (success) {
-        track('trial_started', { plan: selectedPlan.id });
-        router.push('/dashboard');
-      } else {
+      if (!success) {
         setError('Une erreur est survenue lors de l\'inscription');
+        return;
       }
+
+      track('trial_started', { plan: selectedPlan.id });
+
+      // 2. Redirect to Stripe Checkout for payment setup
+      try {
+        const { url } = await createCheckoutSession(selectedPlan.id, email);
+        if (url) {
+          window.location.href = url;
+          return;
+        }
+      } catch {
+        // Stripe not configured - continue with local-only flow
+        console.warn('Stripe not configured, continuing with local trial');
+      }
+
+      // Fallback: go to dashboard if Stripe is not set up
+      router.push('/dashboard');
     } catch {
       setError('Une erreur est survenue');
     } finally {
@@ -99,6 +115,14 @@ function SignupForm() {
           <p className="text-sm text-blue-700 mt-2">
             14 jours d&apos;essai gratuit inclus
           </p>
+        </div>
+
+        {/* Payment info */}
+        <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+          <div className="flex items-center gap-2 text-sm text-gray-600">
+            <CreditCardIcon className="h-4 w-4 text-gray-400" />
+            <span>Vous serez redirigé vers Stripe pour entrer vos informations de paiement</span>
+          </div>
         </div>
 
         <form className="mt-6 space-y-6" onSubmit={handleSubmit}>
@@ -164,15 +188,41 @@ function SignupForm() {
           </div>
 
           <Button type="submit" className="w-full" disabled={submitting}>
-            {submitting ? 'Création...' : 'Commencer l\'essai gratuit'}
+            {submitting ? (
+              <span className="flex items-center justify-center gap-2">
+                <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></span>
+                Redirection vers le paiement...
+              </span>
+            ) : (
+              <>
+                <LockIcon className="h-4 w-4 mr-2 inline" />
+                S&apos;inscrire et configurer le paiement
+              </>
+            )}
           </Button>
         </form>
 
         <p className="text-center text-xs text-gray-500">
-          Pas de carte bancaire requise • Annulez à tout moment
+          Paiement sécurisé par Stripe • 14 jours d&apos;essai gratuit • Annulez à tout moment
         </p>
       </div>
     </div>
+  );
+}
+
+function CreditCardIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+    </svg>
+  );
+}
+
+function LockIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+    </svg>
   );
 }
 

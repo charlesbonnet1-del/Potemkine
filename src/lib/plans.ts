@@ -55,3 +55,33 @@ export const PLANS: Plan[] = [
 export function getPlan(planId: string): Plan | undefined {
   return PLANS.find(p => p.id === planId);
 }
+
+export async function createCheckoutSession(planId: string, email?: string, userId?: string) {
+  const response = await fetch('/api/stripe/checkout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ planId, email, userId }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Erreur lors de la création de la session');
+  }
+
+  return response.json() as Promise<{ sessionId: string; url: string }>;
+}
+
+export async function createPortalSession(email: string) {
+  const response = await fetch('/api/stripe/portal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Erreur lors de la création du portail');
+  }
+
+  return response.json() as Promise<{ url: string }>;
+}
