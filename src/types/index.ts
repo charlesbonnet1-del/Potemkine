@@ -8,6 +8,9 @@ export interface User {
   subscription: Subscription;
   onboardingCompleted: boolean;
   preferences: UserPreferences;
+  // Stripe integration
+  stripeCustomerId?: string;
+  stripeSubscriptionId?: string;
 }
 
 export interface UserPreferences {
